@@ -15,28 +15,70 @@ ln -s /etc/XrayR/XrayR /usr/bin/XrayR
 cat > /etc/init.d/XrayR <<EOF
 #!/sbin/openrc-run
 
+name="XrayR"
+description="XrayR proxy service"
+command="/usr/bin/XrayR"
+command_args="-c /etc/XrayR/config.yml"
+command_background="yes"
+pidfile="/var/run/${RC_SVCNAME}.pid"
+
+# 重要：设置停止信号和重试策略
+retry="TERM/30/KILL/5"
+
+output_log="/var/log/XrayR/output.log"
+error_log="/var/log/XrayR/error.log"
+
 depend() {
     need net
+    after firewall
 }
 
-start() {
-    ebegin "Starting XrayR"
-    start-stop-daemon --start --exec /usr/bin/XrayR -- -c /etc/XrayR/config.yml
-    eend $?
+start_pre() {
+    checkpath --directory --owner root:root --mode 0755 /var/log/XrayR
+    
+    if [ ! -f /etc/XrayR/config.yml ]; then
+        eerror "Config file not found: /etc/XrayR/config.yml"
+        return 1
+    fi
+    
+    if [ ! -x /usr/bin/XrayR ]; then
+        eerror "XrayR binary not found or not executable: /usr/bin/XrayR"
+        return 1
+    fi
 }
 
-stop() {
-    ebegin "Stopping XrayR"
-    start-stop-daemon --stop --exec /usr/bin/XrayR
-    eend $?
+start_post() {
+    sleep 2
+    if [ -f "$pidfile" ]; then
+        local pid=$(cat "$pidfile")
+        if kill -0 "$pid" 2>/dev/null; then
+            einfo "XrayR started successfully with PID: $pid"
+            return 0
+        else
+            eerror "XrayR process not running despite PID file exists"
+            rm -f "$pidfile"
+            return 1
+        fi
+    else
+        eerror "PID file was not created"
+        return 1
+    fi
 }
 
-restart() {
-    ebegin "Restarting XrayR"
-    start-stop-daemon --stop --exec /usr/bin/XrayR
-    sleep 1
-    start-stop-daemon --start --exec /usr/bin/XrayR -- -c /etc/XrayR/config.yml
-    eend $?
+stop_post() {
+    # 强制清理 PID 文件
+    if [ -f "$pidfile" ]; then
+        rm -f "$pidfile"
+    fi
+    
+    # 确保进程真的停止了
+    if pgrep -f "/usr/bin/XrayR.*config.yml" >/dev/null 2>&1; then
+        ewarn "XrayR process still running, force killing..."
+        pkill -9 -f "/usr/bin/XrayR.*config.yml"
+        sleep 1
+    fi
+    
+    return 0
 }
 EOF
 
