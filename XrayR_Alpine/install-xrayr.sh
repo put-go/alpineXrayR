@@ -1,34 +1,46 @@
 #!/bin/sh
-# 更新软件源
+
+# =========================
+# XrayR 一键安装 + OpenRC(supervise-daemon) 新方案
+# Alpine 适用
+# =========================
+
+XRAYR_VER="v0.9.5"
+XRAYR_ZIP="XrayR-linux-64.zip"
+XRAYR_URL="https://github.com/put-go/XrayR/releases/download/${XRAYR_VER}/${XRAYR_ZIP}"
+
+# 1) 更新并安装依赖
 apk update
-# 安装依赖项
 apk add wget unzip openrc
-# 下载 XrayR
-wget https://github.com/put-go/XrayR/releases/download/v0.9.5/XrayR-linux-64.zip
-# 解压缩
-unzip XrayR-linux-64.zip -d /etc/XrayR
-# 添加执行权限
+
+# 2) 准备目录
+mkdir -p /etc/XrayR
+mkdir -p /var/log
+
+# 3) 下载并解压
+cd /tmp || exit 1
+wget -O "${XRAYR_ZIP}" "${XRAYR_URL}"
+unzip -o "${XRAYR_ZIP}" -d /etc/XrayR
+
+# 4) 设置执行权限 + 软链接
 chmod +x /etc/XrayR/XrayR
-# 创建软链接
-ln -s /etc/XrayR/XrayR /usr/bin/XrayR
-# 创建 XrayR 服务文件
+ln -sf /etc/XrayR/XrayR /usr/bin/XrayR
+
+# 5) 若配置不存在，给出提示（不强制覆盖）
+if [ ! -f /etc/XrayR/config.yml ]; then
+  echo "警告: /etc/XrayR/config.yml 不存在，请自行上传或配置后再启动。"
+fi
+
+# 6) 创建 OpenRC 服务（supervise-daemon 方案）
 cat > /etc/init.d/XrayR << 'EOF'
 #!/sbin/openrc-run
-
+supervisor=supervise-daemon
 name="XrayR"
-description="XrayR proxy service"
-command="/usr/bin/XrayR"
+description="XrayR Service"
+command=/usr/bin/XrayR
 command_args="-c /etc/XrayR/config.yml"
-command_background="yes"
-pidfile="/var/run/XrayR.pid"
-
-# 关键：让 start-stop-daemon 创建 PID 文件
-start_stop_daemon_args="--make-pidfile"
-
-retry="TERM/30/KILL/5"
-
-output_log="/var/log/XrayR/output.log"
-error_log="/var/log/XrayR/error.log"
+directory="/etc/XrayR"
+supervise_daemon_args="--stdout /var/log/XrayR.log --stderr /var/log/XrayR.err --respawn-delay 2 --respawn-max 5 --respawn-period 1800"
 
 depend() {
     need net
@@ -36,67 +48,41 @@ depend() {
 }
 
 start_pre() {
-    checkpath --directory --owner root:root --mode 0755 /var/log/XrayR
-    
-    if [ ! -f /etc/XrayR/config.yml ]; then
-        eerror "Config file not found: /etc/XrayR/config.yml"
-        return 1
-    fi
-    
     if [ ! -x /usr/bin/XrayR ]; then
         eerror "XrayR binary not found or not executable: /usr/bin/XrayR"
         return 1
     fi
-    
-    # 清理可能存在的旧 PID 文件
-    if [ -f "${pidfile}" ]; then
-        local old_pid=$(cat "${pidfile}" 2>/dev/null)
-        if [ -n "${old_pid}" ] && ! kill -0 "${old_pid}" 2>/dev/null; then
-            rm -f "${pidfile}"
-        fi
-    fi
-}
 
-start_post() {
-    sleep 2
-    if [ -f "${pidfile}" ]; then
-        local pid=$(cat "${pidfile}")
-        if kill -0 "${pid}" 2>/dev/null; then
-            einfo "XrayR started successfully with PID: ${pid}"
-            return 0
-        else
-            eerror "XrayR process not running despite PID file exists"
-            rm -f "${pidfile}"
-            return 1
-        fi
-    else
-        eerror "PID file was not created"
+    if [ ! -f /etc/XrayR/config.yml ]; then
+        eerror "Config file not found: /etc/XrayR/config.yml"
         return 1
     fi
-}
 
-stop_post() {
-    # 强制清理 PID 文件
-    if [ -f "${pidfile}" ]; then
-        rm -f "${pidfile}"
-    fi
-    
-    # 确保进程真的停止了
-    if pgrep -f "/usr/bin/XrayR.*config.yml" >/dev/null 2>&1; then
-        ewarn "XrayR process still running, force killing..."
-        pkill -9 -f "/usr/bin/XrayR.*config.yml"
-        sleep 1
-    fi
-    
+    touch /var/log/XrayR.log /var/log/XrayR.err
     return 0
 }
 EOF
 
-
-# 添加执行权限
 chmod +x /etc/init.d/XrayR
 
-# 添加到开机启动项中
+# 7) 设置开机自启
 rc-update add XrayR default
 
+# 8) 启动服务（配置存在才启动）
+if [ -f /etc/XrayR/config.yml ]; then
+  rc-service XrayR restart
+  if [ $? -ne 0 ]; then
+    rc-service XrayR start
+  fi
+  rc-service XrayR status
+else
+  echo "未启动 XrayR：缺少 /etc/XrayR/config.yml"
+fi
+
 echo "安装完成！"
+echo "管理命令:"
+echo "  rc-service XrayR start|stop|restart|status"
+echo "  rc-update add XrayR default"
+echo "日志:"
+echo "  /var/log/XrayR.log"
+echo "  /var/log/XrayR.err"
